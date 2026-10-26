@@ -3,22 +3,28 @@ package com.example.ui.screens.scanner
 import android.graphics.Bitmap
 import android.graphics.PointF
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,12 +40,17 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.domain.model.ToolCategory
+import com.example.domain.model.ToolItem
+import com.example.domain.model.ToolRegistry
 import com.example.ui.theme.BrandBlue
 import com.example.utils.DocumentFilter
 import com.example.utils.DocumentQuad
+import com.example.utils.ScannedPageItem
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.max
@@ -753,6 +764,665 @@ private fun CamScannerFilterItem(
             color = if (isSelected) CamScannerTealBright else Color.White.copy(alpha = 0.75f),
             fontSize = 11.sp
         )
+    }
+}
+
+/**
+ * QR Code vs Barcode mode selector
+ */
+enum class QrBarcodeSubMode(val label: String) {
+    QR_CODE("QR Code"),
+    BARCODE("Barcode")
+}
+
+/**
+ * Permanent, Rock-Solid Category Viewfinder.
+ * Replaces jittering live edge overlays with a clean, stable bounding border tailored to each category.
+ * Captures within this frame, then runs high-accuracy auto-crop and perspective correction.
+ */
+@Composable
+fun PermanentCategoryViewfinder(
+    mode: CameraAppMode,
+    qrBarcodeSubMode: QrBarcodeSubMode = QrBarcodeSubMode.QR_CODE,
+    idCardSide: String = "Front Side",
+    pageCount: Int = 0,
+    modifier: Modifier = Modifier
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "laser_transition")
+    val laserProgress by infiniteTransition.animateFloat(
+        initialValue = 0.05f,
+        targetValue = 0.95f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1800, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "laser_progress"
+    )
+
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        val screenW = maxWidth
+        val screenH = maxHeight
+
+        val (boxWidth, boxHeight, cornerRadius, guideTitle) = remember(mode, qrBarcodeSubMode, screenW, screenH) {
+            when (mode) {
+                CameraAppMode.SCANNER, CameraAppMode.PDF -> {
+                    val w = screenW * 0.85f
+                    val h = minOf(screenH * 0.65f, w * 1.38f)
+                    val title = if (mode == CameraAppMode.PDF && pageCount > 0) {
+                        "Page ${pageCount + 1} • Align document inside border"
+                    } else {
+                        "Align document inside border"
+                    }
+                    CategoryViewfinderDimensions(w, h, 14.dp, title)
+                }
+                CameraAppMode.ID_CARD -> {
+                    val w = screenW * 0.88f
+                    val h = w / 1.586f // Standard CR80 ID Card aspect ratio
+                    CategoryViewfinderDimensions(w, h, 16.dp, "Place $idCardSide of NID / ID Card inside border")
+                }
+                CameraAppMode.QR_BARCODE -> {
+                    if (qrBarcodeSubMode == QrBarcodeSubMode.QR_CODE) {
+                        val side = minOf(screenW * 0.72f, 260.dp)
+                        CategoryViewfinderDimensions(side, side, 16.dp, "Align QR code inside square border")
+                    } else {
+                        val w = screenW * 0.86f
+                        val h = 135.dp
+                        CategoryViewfinderDimensions(w, h, 14.dp, "Align barcode inside rectangular border")
+                    }
+                }
+                CameraAppMode.PHOTO -> {
+                    val w = screenW * 0.88f
+                    val h = screenH * 0.62f
+                    CategoryViewfinderDimensions(w, h, 12.dp, "Frame photo inside border")
+                }
+            }
+        }
+
+        // 1. Darkened vignette cutout & permanent border
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val totalW = size.width
+            val totalH = size.height
+
+            val left = (totalW - boxWidth.toPx()) / 2f
+            val top = (totalH - boxHeight.toPx()) / 2f - 24.dp.toPx()
+            val right = left + boxWidth.toPx()
+            val bottom = top + boxHeight.toPx()
+
+            // Outer dark translucent mask
+            val cutoutPath = Path().apply {
+                moveTo(0f, 0f)
+                lineTo(totalW, 0f)
+                lineTo(totalW, totalH)
+                lineTo(0f, totalH)
+                close()
+                val r = cornerRadius.toPx()
+                addRoundRect(
+                    androidx.compose.ui.geometry.RoundRect(
+                        left = left,
+                        top = top,
+                        right = right,
+                        bottom = bottom,
+                        radiusX = r,
+                        radiusY = r
+                    )
+                )
+            }
+            drawPath(cutoutPath, color = Color.Black.copy(alpha = 0.52f))
+
+            // 2. Permanent border stroke
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.55f),
+                topLeft = Offset(left, top),
+                size = androidx.compose.ui.geometry.Size(boxWidth.toPx(), boxHeight.toPx()),
+                cornerRadius = CornerRadius(cornerRadius.toPx(), cornerRadius.toPx()),
+                style = Stroke(width = 1.8.dp.toPx())
+            )
+
+            // 3. Prominent Corner Brackets (CamScanner Teal Bright)
+            val cornerLen = 30.dp.toPx()
+            val bracketStroke = 4.dp.toPx()
+            val bracketColor = CamScannerTealBright
+
+            // Top-Left
+            drawLine(bracketColor, Offset(left, top + cornerLen), Offset(left, top + 10.dp.toPx()), bracketStroke, StrokeCap.Round)
+            drawArc(bracketColor, 180f, 90f, false, Offset(left, top), androidx.compose.ui.geometry.Size(20.dp.toPx(), 20.dp.toPx()), style = Stroke(bracketStroke, cap = StrokeCap.Round))
+            drawLine(bracketColor, Offset(left + 10.dp.toPx(), top), Offset(left + cornerLen, top), bracketStroke, StrokeCap.Round)
+
+            // Top-Right
+            drawLine(bracketColor, Offset(right - cornerLen, top), Offset(right - 10.dp.toPx(), top), bracketStroke, StrokeCap.Round)
+            drawArc(bracketColor, 270f, 90f, false, Offset(right - 20.dp.toPx(), top), androidx.compose.ui.geometry.Size(20.dp.toPx(), 20.dp.toPx()), style = Stroke(bracketStroke, cap = StrokeCap.Round))
+            drawLine(bracketColor, Offset(right, top + 10.dp.toPx()), Offset(right, top + cornerLen), bracketStroke, StrokeCap.Round)
+
+            // Bottom-Right
+            drawLine(bracketColor, Offset(right, bottom - cornerLen), Offset(right, bottom - 10.dp.toPx()), bracketStroke, StrokeCap.Round)
+            drawArc(bracketColor, 0f, 90f, false, Offset(right - 20.dp.toPx(), bottom - 20.dp.toPx()), androidx.compose.ui.geometry.Size(20.dp.toPx(), 20.dp.toPx()), style = Stroke(bracketStroke, cap = StrokeCap.Round))
+            drawLine(bracketColor, Offset(right - 10.dp.toPx(), bottom), Offset(right - cornerLen, bottom), bracketStroke, StrokeCap.Round)
+
+            // Bottom-Left
+            drawLine(bracketColor, Offset(left + cornerLen, bottom), Offset(left + 10.dp.toPx(), bottom), bracketStroke, StrokeCap.Round)
+            drawArc(bracketColor, 90f, 90f, false, Offset(left, bottom - 20.dp.toPx()), androidx.compose.ui.geometry.Size(20.dp.toPx(), 20.dp.toPx()), style = Stroke(bracketStroke, cap = StrokeCap.Round))
+            drawLine(bracketColor, Offset(left, bottom - 10.dp.toPx()), Offset(left, bottom - cornerLen), bracketStroke, StrokeCap.Round)
+
+            // 4. Subtle Category-Specific Watermarks
+            when (mode) {
+                CameraAppMode.ID_CARD -> {
+                    val chipW = 38.dp.toPx()
+                    val chipH = 28.dp.toPx()
+                    val chipX = left + 24.dp.toPx()
+                    val chipY = top + (boxHeight.toPx() - chipH) / 2f
+                    drawRoundRect(
+                        color = Color.White.copy(alpha = 0.35f),
+                        topLeft = Offset(chipX, chipY),
+                        size = androidx.compose.ui.geometry.Size(chipW, chipH),
+                        cornerRadius = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
+                        style = Stroke(width = 1.5.dp.toPx())
+                    )
+
+                    val avatarR = 24.dp.toPx()
+                    val avatarCenterX = right - 38.dp.toPx()
+                    val avatarCenterY = top + (boxHeight.toPx()) / 2f
+                    drawCircle(
+                        color = Color.White.copy(alpha = 0.3f),
+                        radius = avatarR,
+                        center = Offset(avatarCenterX, avatarCenterY),
+                        style = Stroke(width = 1.5.dp.toPx())
+                    )
+                }
+                CameraAppMode.QR_BARCODE -> {
+                    if (qrBarcodeSubMode == QrBarcodeSubMode.QR_CODE) {
+                        val laserY = top + boxHeight.toPx() * laserProgress
+                        drawLine(
+                            color = CamScannerTealBright,
+                            start = Offset(left + 8.dp.toPx(), laserY),
+                            end = Offset(right - 8.dp.toPx(), laserY),
+                            strokeWidth = 2.5.dp.toPx(),
+                            cap = StrokeCap.Round
+                        )
+                    } else {
+                        val laserY = top + boxHeight.toPx() * 0.5f
+                        drawLine(
+                            color = Color(0xFFEF4444), // Red barcode laser
+                            start = Offset(left + 6.dp.toPx(), laserY),
+                            end = Offset(right - 6.dp.toPx(), laserY),
+                            strokeWidth = 2.5.dp.toPx(),
+                            cap = StrokeCap.Round
+                        )
+                    }
+                }
+                CameraAppMode.SCANNER, CameraAppMode.PDF -> {
+                    val midX = left + boxWidth.toPx() / 2f
+                    val midY = top + boxHeight.toPx() / 2f
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.25f),
+                        start = Offset(midX - 12.dp.toPx(), midY),
+                        end = Offset(midX + 12.dp.toPx(), midY),
+                        strokeWidth = 1.5.dp.toPx()
+                    )
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.25f),
+                        start = Offset(midX, midY - 12.dp.toPx()),
+                        end = Offset(midX, midY + 12.dp.toPx()),
+                        strokeWidth = 1.5.dp.toPx()
+                    )
+                }
+                CameraAppMode.PHOTO -> {}
+            }
+        }
+
+        // Category Guide text badge
+        Column(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .offset(y = (boxHeight / 2) + 14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = Color.Black.copy(alpha = 0.72f),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))
+            ) {
+                Text(
+                    text = guideTitle,
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp)
+                )
+            }
+        }
+    }
+}
+
+private data class CategoryViewfinderDimensions(
+    val width: androidx.compose.ui.unit.Dp,
+    val height: androidx.compose.ui.unit.Dp,
+    val cornerRadius: androidx.compose.ui.unit.Dp,
+    val title: String
+)
+
+/**
+ * Switcher between QR Code and Barcode modes.
+ * Contained in a dark pill container: the active item turns white with black text.
+ */
+@Composable
+fun QrBarcodeSelectorSwitch(
+    activeSubMode: QrBarcodeSubMode,
+    onSubModeSelected: (QrBarcodeSubMode) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xFF18181B).copy(alpha = 0.92f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f)),
+        modifier = modifier
+    ) {
+        Row(
+            modifier = Modifier.padding(4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val isQr = (activeSubMode == QrBarcodeSubMode.QR_CODE)
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(if (isQr) Color.White else Color.Transparent)
+                    .clickable { onSubModeSelected(QrBarcodeSubMode.QR_CODE) }
+                    .padding(horizontal = 16.dp, vertical = 7.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.QrCode,
+                        contentDescription = "QR Code",
+                        tint = if (isQr) Color.Black else Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "QR Code",
+                        color = if (isQr) Color.Black else Color.White.copy(alpha = 0.8f),
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = if (isQr) FontWeight.Bold else FontWeight.Medium
+                        )
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(4.dp))
+
+            val isBarcode = (activeSubMode == QrBarcodeSubMode.BARCODE)
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(if (isBarcode) Color.White else Color.Transparent)
+                    .clickable { onSubModeSelected(QrBarcodeSubMode.BARCODE) }
+                    .padding(horizontal = 16.dp, vertical = 7.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.ViewWeek,
+                        contentDescription = "Barcode",
+                        tint = if (isBarcode) Color.Black else Color.White.copy(alpha = 0.8f),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Barcode",
+                        color = if (isBarcode) Color.Black else Color.White.copy(alpha = 0.8f),
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontWeight = if (isBarcode) FontWeight.Bold else FontWeight.Medium
+                        )
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Multi-page thumbnail strip with '+' Add Page button.
+ * Displays all cropped pages so far with page index and an Add Page button that returns to camera.
+ */
+@Composable
+fun MultiPageThumbnailStrip(
+    pages: List<ScannedPageItem>,
+    currentBitmap: Bitmap?,
+    selectedIndex: Int,
+    onSelectPage: (Int) -> Unit,
+    onAddPage: () -> Unit,
+    onDeletePage: ((Int) -> Unit)? = null,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.weight(1f)
+        ) {
+            // Render all scanned pages in session
+            itemsIndexed(pages) { index, item ->
+                val isSelected = (index == selectedIndex)
+                Box(
+                    modifier = Modifier
+                        .width(58.dp)
+                        .height(78.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .border(
+                            width = if (isSelected) 2.5.dp else 1.dp,
+                            color = if (isSelected) CamScannerTealBright else Color.White.copy(alpha = 0.3f),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        .clickable { onSelectPage(index) }
+                ) {
+                    Image(
+                        bitmap = item.processed.asImageBitmap(),
+                        contentDescription = "Page ${index + 1}",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+
+                    // Page number badge
+                    Surface(
+                        color = if (isSelected) CamScannerTeal else Color.Black.copy(alpha = 0.75f),
+                        shape = RoundedCornerShape(topStart = 4.dp, bottomEnd = 4.dp),
+                        modifier = Modifier.align(Alignment.TopStart)
+                    ) {
+                        Text(
+                            text = "${index + 1}",
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                        )
+                    }
+
+                    // Delete button if more than 1 page
+                    if (pages.size > 1 && onDeletePage != null) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .size(18.dp)
+                                .clip(CircleShape)
+                                .background(Color.Red.copy(alpha = 0.85f))
+                                .clickable { onDeletePage(index) },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Delete Page",
+                                tint = Color.White,
+                                modifier = Modifier.size(11.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // If current page is not yet in pages list, show current preview
+            if (selectedIndex >= pages.size && currentBitmap != null) {
+                item {
+                    Box(
+                        modifier = Modifier
+                            .width(58.dp)
+                            .height(78.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .border(2.5.dp, CamScannerTealBright, RoundedCornerShape(8.dp))
+                    ) {
+                        Image(
+                            bitmap = currentBitmap.asImageBitmap(),
+                            contentDescription = "Current page",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                        Surface(
+                            color = CamScannerTeal,
+                            shape = RoundedCornerShape(topStart = 4.dp, bottomEnd = 4.dp),
+                            modifier = Modifier.align(Alignment.TopStart)
+                        ) {
+                            Text(
+                                text = "${pages.size + 1}",
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Prominent '+' Add Page button
+            item {
+                Box(
+                    modifier = Modifier
+                        .width(58.dp)
+                        .height(78.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF242426))
+                        .border(1.5.dp, CamScannerTealBright.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
+                        .clickable { onAddPage() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Add Page",
+                            tint = CamScannerTealBright,
+                            modifier = Modifier.size(26.dp)
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Add Page",
+                            color = Color.White.copy(alpha = 0.9f),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Translucent Frosted Glass Bottom Sheet displaying all application categories and features.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AllFeaturesGlassBottomSheet(
+    onDismiss: () -> Unit,
+    onSelectCameraMode: (CameraAppMode) -> Unit,
+    onSelectCategory: (ToolCategory) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xF218181B), // Dark frosted glass effect
+        scrimColor = Color.Black.copy(alpha = 0.6f),
+        dragHandle = {
+            Box(
+                modifier = Modifier
+                    .padding(vertical = 10.dp)
+                    .width(42.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(Color.White.copy(alpha = 0.35f))
+            )
+        },
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+        ) {
+            // Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text(
+                        text = "All Features & Tools",
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                        color = Color.White
+                    )
+                    Text(
+                        text = "Utility Hub & Circle Scanner Features",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.65f)
+                    )
+                }
+
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.1f))
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Close",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            // Quick Scanner Presets Row
+            Text(
+                text = "Scanner Modes",
+                color = CamScannerTealBright,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                val scannerPresets = listOf(
+                    Triple(CameraAppMode.SCANNER, "Document", Icons.Default.DocumentScanner),
+                    Triple(CameraAppMode.PDF, "PDF Batch", Icons.Default.PictureAsPdf),
+                    Triple(CameraAppMode.ID_CARD, "NID Card", Icons.Default.Badge),
+                    Triple(CameraAppMode.QR_BARCODE, "QR & Barcode", Icons.Default.QrCodeScanner)
+                )
+                scannerPresets.forEach { (mode, label, icon) ->
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFF27272A),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
+                        modifier = Modifier
+                            .weight(1f)
+                            .clickable {
+                                onSelectCameraMode(mode)
+                                onDismiss()
+                            }
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(vertical = 10.dp, horizontal = 4.dp)
+                        ) {
+                            Icon(
+                                imageVector = icon,
+                                contentDescription = label,
+                                tint = CamScannerTealBright,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = label,
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                maxLines = 1,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
+
+            // All Categories Grid
+            Text(
+                text = "All Utility Hub Categories",
+                color = Color.White.copy(alpha = 0.85f),
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(2),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 340.dp)
+            ) {
+                items(ToolCategory.entries.toTypedArray()) { category ->
+                    val count = ToolRegistry.getCategoryCount(category)
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = Color(0xFF27272A).copy(alpha = 0.85f),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onSelectCategory(category)
+                                onDismiss()
+                            }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(12.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(category.accentColor.copy(alpha = 0.2f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = category.icon,
+                                    contentDescription = category.title,
+                                    tint = category.accentColor,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = category.title,
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1
+                                )
+                                Text(
+                                    text = "$count tools",
+                                    color = Color.White.copy(alpha = 0.55f),
+                                    fontSize = 10.sp
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
+        }
     }
 }
 

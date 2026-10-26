@@ -179,6 +179,9 @@ fun AppNavigation() {
                     },
                     onNavigateToPastScans = {
                         navController.navigate(Screen.PastScans.route)
+                    },
+                    onNavigateToCategory = { catId ->
+                        navController.navigate(Screen.CategoryDetails.createRoute(catId))
                     }
                 )
             }

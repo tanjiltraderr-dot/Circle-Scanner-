@@ -21,6 +21,7 @@ import androidx.camera.view.PreviewView
 import androidx.compose.animation.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -114,7 +115,9 @@ fun FullScannerScreen(
     onNavigateToResult: (content: String, format: String) -> Unit,
     onNavigateToDocumentViewer: (filePath: String, title: String) -> Unit = { _, _ -> },
     onNavigateToDocumentViewerWithId: (filePath: String, title: String, docId: Long) -> Unit = { p, t, _ -> onNavigateToDocumentViewer(p, t) },
-    onNavigateToPastScans: () -> Unit = {}
+    onNavigateToPastScans: () -> Unit = {},
+    onNavigateToCategory: ((String) -> Unit)? = null,
+    onNavigateToTool: ((String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -146,6 +149,15 @@ fun FullScannerScreen(
             }
         )
     }
+
+    // QR Code vs Barcode Sub-mode
+    var qrBarcodeSubMode by remember { mutableStateOf(QrBarcodeSubMode.QR_CODE) }
+
+    // NID / ID Card Side Sub-mode (Front / Back)
+    var idCardSide by remember { mutableStateOf("Front Side") }
+
+    // Glassmorphic All Features Bottom Sheet State
+    var showAllFeaturesSheet by remember { mutableStateOf(false) }
 
     var isFlashOn by remember { mutableStateOf(false) }
     var isFlashSupported by remember { mutableStateOf(false) }
@@ -771,65 +783,61 @@ fun FullScannerScreen(
                             )
                         }
 
-                        // Live document boundary detection overlay in CamScanner Teal
-                        if (activeCameraMode.isDocument) {
-                            LiveDocumentDetectionOverlay(
-                                detectedQuad = realtimeQuad,
-                                bufferWidth = realtimeBufferWidth,
-                                bufferHeight = realtimeBufferHeight,
-                                isReliable = isRealtimeReliable,
-                                isStable = isRealtimeStable,
-                                isFrontCamera = (lensFacing == CameraSelector.LENS_FACING_FRONT),
-                                modifier = Modifier.fillMaxSize()
-                            )
-                        }
+                        // 1. Permanent, Rock-Solid Category Viewfinder (replaces jittering live polygon)
+                        PermanentCategoryViewfinder(
+                            mode = activeCameraMode,
+                            qrBarcodeSubMode = qrBarcodeSubMode,
+                            idCardSide = idCardSide,
+                            pageCount = documentPages.size,
+                            modifier = Modifier.fillMaxSize()
+                        )
 
-                        // Status guidance badge
-                        Surface(
-                            shape = RoundedCornerShape(20.dp),
-                            color = when {
-                                activeCameraMode.isDocument && isRealtimeStable -> CamScannerTeal.copy(alpha = 0.9f)
-                                activeCameraMode.isDocument && (isFrameBlurry || isFrameTooDark) -> Color(0xFFD97706).copy(alpha = 0.85f)
-                                activeCameraMode.isDocument && isRealtimeReliable -> Color(0xFF2563EB).copy(alpha = 0.85f)
-                                else -> Color.Black.copy(alpha = 0.65f)
-                            },
-                            modifier = Modifier
-                                .align(Alignment.TopCenter)
-                                .statusBarsPadding()
-                                .padding(top = 62.dp)
-                                .testTag("camscanner_instructions")
-                        ) {
-                            val msg = when {
-                                activeCameraMode == CameraAppMode.PDF && documentPages.isNotEmpty() ->
-                                    "${documentPages.size} page(s) scanned • Position next page"
-                                activeCameraMode.isDocument && isRealtimeStable && isAutoCropEnabled ->
-                                    "Document Steady • Capturing..."
-                                activeCameraMode.isDocument && isRealtimeStable ->
-                                    "Document Steady • Tap to capture"
-                                activeCameraMode.isDocument && isFrameBlurry ->
-                                    "Hold Still • Camera Blurry"
-                                activeCameraMode.isDocument && isFrameTooDark ->
-                                    "Low Light • Turn on flash"
-                                activeCameraMode.isDocument && isFrameTooBright ->
-                                    "Too Bright • Reduce glare"
-                                activeCameraMode.isDocument && isRealtimeReliable ->
-                                    "Document Detected • Hold steady"
-                                activeCameraMode == CameraAppMode.SCANNER ->
-                                    "Align document within frame"
-                                activeCameraMode == CameraAppMode.PDF ->
-                                    "Position page to scan multi-page PDF"
-                                activeCameraMode == CameraAppMode.QR_BARCODE ->
-                                    "Point camera at QR code or barcode"
-                                activeCameraMode == CameraAppMode.ID_CARD ->
-                                    "Align ID card within the frame"
-                                else -> "Frame photo and tap shutter"
-                            }
-                            Text(
-                                text = msg,
-                                color = Color.White,
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                        // 2. Sub-mode Selector for QR Code vs Barcode (when in QR_BARCODE mode)
+                        if (activeCameraMode == CameraAppMode.QR_BARCODE) {
+                            QrBarcodeSelectorSwitch(
+                                activeSubMode = qrBarcodeSubMode,
+                                onSubModeSelected = { qrBarcodeSubMode = it },
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .statusBarsPadding()
+                                    .padding(top = 58.dp)
+                                    .testTag("qr_barcode_toggle_switch")
                             )
+                        } else if (activeCameraMode == CameraAppMode.ID_CARD) {
+                            // Front / Back Side Switcher for ID Card
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = Color(0xFF18181B).copy(alpha = 0.9f),
+                                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+                                modifier = Modifier
+                                    .align(Alignment.TopCenter)
+                                    .statusBarsPadding()
+                                    .padding(top = 58.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(3.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    listOf("Front Side", "Back Side").forEach { side ->
+                                        val isSel = (idCardSide == side)
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(16.dp))
+                                                .background(if (isSel) Color.White else Color.Transparent)
+                                                .clickable { idCardSide = side }
+                                                .padding(horizontal = 14.dp, vertical = 6.dp)
+                                        ) {
+                                            Text(
+                                                text = side,
+                                                color = if (isSel) Color.Black else Color.White.copy(alpha = 0.8f),
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium
+                                                )
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         // Top Camera Toolbar (Back, Flash, HD, Flip)
@@ -955,23 +963,6 @@ fun FullScannerScreen(
                                         modifier = Modifier.size(22.dp)
                                     )
                                 }
-
-                                // Past Scans / Saved Documents List
-                                IconButton(
-                                    onClick = onNavigateToPastScans,
-                                    modifier = Modifier
-                                        .size(42.dp)
-                                        .clip(CircleShape)
-                                        .background(Color.Black.copy(alpha = 0.5f))
-                                        .testTag("btn_past_scans_top")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.FolderOpen,
-                                        contentDescription = "Past Scans",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                }
                             }
                         }
 
@@ -1028,39 +1019,7 @@ fun FullScannerScreen(
                                 }
                             }
 
-                            // Google AI Scanner (Instant Bed / Complex Background Auto-Crop)
-                            if (activeCameraMode.isDocument) {
-                                Surface(
-                                    shape = RoundedCornerShape(20.dp),
-                                    color = Color(0xFF0F172A).copy(alpha = 0.85f),
-                                    border = androidx.compose.foundation.BorderStroke(1.dp, CamScannerTealBright.copy(alpha = 0.8f)),
-                                    modifier = Modifier
-                                        .padding(bottom = 12.dp)
-                                        .clip(RoundedCornerShape(20.dp))
-                                        .testTag("in_app_custom_scanner_badge")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.AutoAwesome,
-                                            contentDescription = null,
-                                            tint = CamScannerTealBright,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = "In-App CamScanner • Auto Edge & Dewarp",
-                                            color = Color.White,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                    }
-                                }
-                            }
-
-                            // Shutter Controls Row (Matching CamScanner Video)
+                            // Shutter Controls Row (Matching CamScanner UX)
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -1068,12 +1027,12 @@ fun FullScannerScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Left: All Features Grid Icon
+                                // Left: All Features Glass Sheet Launcher
                                 Column(
                                     horizontalAlignment = Alignment.CenterHorizontally,
-                                    modifier = Modifier.clickable {
-                                        Toast.makeText(context, "Mode: ${activeCameraMode.label}", Toast.LENGTH_SHORT).show()
-                                    }
+                                    modifier = Modifier
+                                        .clickable { showAllFeaturesSheet = true }
+                                        .testTag("btn_all_features")
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.GridView,
@@ -1089,7 +1048,7 @@ fun FullScannerScreen(
                                     )
                                 }
 
-                                // Center: CamScanner Signature Shutter Button with Auto-Capture Stability Ring
+                                // Center: Signature Shutter Button with Auto-Capture Stability Ring
                                 Box(
                                     modifier = Modifier.size(86.dp),
                                     contentAlignment = Alignment.Center
@@ -1130,52 +1089,45 @@ fun FullScannerScreen(
                                     }
                                 }
 
-                                // Right: Import Images / Gallery
-                                if (activeCameraMode == CameraAppMode.PDF && documentPages.isNotEmpty()) {
-                                    // Multi-page batch indicator button
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        modifier = Modifier.clickable { currentStep = CamScannerStep.PDF_SESSION_REVIEW }
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(38.dp)
-                                                .clip(RoundedCornerShape(8.dp))
-                                                .border(2.dp, CamScannerTealBright, RoundedCornerShape(8.dp))
-                                        ) {
-                                            Image(
-                                                bitmap = documentPages.last().processed.asImageBitmap(),
-                                                contentDescription = null,
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier.fillMaxSize()
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.height(3.dp))
-                                        Text(
-                                            text = "View (${documentPages.size})",
-                                            color = CamScannerTealBright,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                } else {
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        modifier = Modifier.clickable { galleryPicker.launch("image/*") }
-                                    ) {
+                                // Right: Gallery / Import with live badge
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier
+                                        .clickable { galleryPicker.launch("image/*") }
+                                        .testTag("gallery_import_btn")
+                                ) {
+                                    Box {
                                         Icon(
                                             imageVector = Icons.Default.PhotoLibrary,
-                                            contentDescription = "Import Images",
+                                            contentDescription = "Gallery",
                                             tint = Color.White.copy(alpha = 0.85f),
                                             modifier = Modifier.size(26.dp)
                                         )
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(
-                                            text = "Import Images",
-                                            color = Color.White.copy(alpha = 0.75f),
-                                            fontSize = 10.sp
-                                        )
+                                        if (documentPages.isNotEmpty()) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .align(Alignment.TopEnd)
+                                                    .offset(x = 6.dp, y = (-4).dp)
+                                                    .size(16.dp)
+                                                    .clip(CircleShape)
+                                                    .background(CamScannerTealBright),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = "${documentPages.size}",
+                                                    color = Color.White,
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
                                     }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = "Gallery",
+                                        color = Color.White.copy(alpha = 0.75f),
+                                        fontSize = 10.sp
+                                    )
                                 }
                             }
                         }
@@ -1478,6 +1430,54 @@ fun FullScannerScreen(
                                 }
                             }
 
+                            // Multi-page thumbnail strip with '+' Add Page button directly below the photo!
+                            MultiPageThumbnailStrip(
+                                pages = documentPages,
+                                currentBitmap = enhBmp,
+                                selectedIndex = selectedPageIndex,
+                                onSelectPage = { idx ->
+                                    if (idx in documentPages.indices) {
+                                        selectedPageIndex = idx
+                                        val page = documentPages[idx]
+                                        croppedBitmap = page.croppedOriginal
+                                        enhancedBitmap = page.processed
+                                        activeFilter = page.activeFilter
+                                        pendingRawBitmap = page.rawOriginal
+                                        pendingCropQuad = page.quad
+                                    }
+                                },
+                                onAddPage = {
+                                    // Commit current page to documentPages
+                                    val pageItem = ScannedPageItem(
+                                        rawOriginal = pendingRawBitmap ?: crBmp,
+                                        croppedOriginal = crBmp,
+                                        processed = enhBmp,
+                                        activeFilter = activeFilter,
+                                        quad = pendingCropQuad
+                                    )
+                                    if (selectedPageIndex < documentPages.size) {
+                                        documentPages[selectedPageIndex] = pageItem
+                                    } else {
+                                        documentPages.add(pageItem)
+                                    }
+                                    selectedPageIndex = documentPages.size
+                                    // Return directly to camera scanner page with permanent border
+                                    currentStep = CamScannerStep.CAMERA
+                                    Toast.makeText(context, "Page ${documentPages.size} saved. Frame next page inside border.", Toast.LENGTH_SHORT).show()
+                                },
+                                onDeletePage = { idx ->
+                                    if (documentPages.size > 1 && idx in documentPages.indices) {
+                                        documentPages.removeAt(idx)
+                                        val newIdx = (idx - 1).coerceAtLeast(0)
+                                        selectedPageIndex = newIdx
+                                        val page = documentPages[newIdx]
+                                        croppedBitmap = page.croppedOriginal
+                                        enhancedBitmap = page.processed
+                                        activeFilter = page.activeFilter
+                                    }
+                                }
+                            )
+
                             // Bottom Bar: Filter Carousel Strip + Tools (Left, Markup, Extract Text, Recrop, Done)
                             CamScannerEnhanceBottomBar(
                                 currentFilter = activeFilter,
@@ -1524,9 +1524,13 @@ fun FullScannerScreen(
                                         activeFilter = activeFilter,
                                         quad = pendingCropQuad
                                     )
-                                    documentPages.add(pageItem)
+                                    if (selectedPageIndex < documentPages.size) {
+                                        documentPages[selectedPageIndex] = pageItem
+                                    } else {
+                                        documentPages.add(pageItem)
+                                    }
                                     selectedPageIndex = documentPages.size - 1
-                                    Toast.makeText(context, "Page ${documentPages.size} added to session", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Page ${documentPages.size} ready. Reviewing session...", Toast.LENGTH_SHORT).show()
                                     currentStep = CamScannerStep.PDF_SESSION_REVIEW
                                 }
                             )
@@ -2073,6 +2077,21 @@ fun FullScannerScreen(
                 TextButton(onClick = { showImageResultDialog = false }) {
                     Text("Done")
                 }
+            }
+        )
+    }
+
+    // All Features Glassmorphic Bottom Sheet
+    if (showAllFeaturesSheet) {
+        AllFeaturesGlassBottomSheet(
+            onDismiss = { showAllFeaturesSheet = false },
+            onSelectCameraMode = { mode ->
+                activeCameraMode = mode
+                showAllFeaturesSheet = false
+            },
+            onSelectCategory = { cat ->
+                showAllFeaturesSheet = false
+                onNavigateToCategory?.invoke(cat.categoryId)
             }
         )
     }
