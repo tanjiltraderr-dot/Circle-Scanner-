@@ -1,0 +1,8 @@
+{
+  "name": "Circle Scanner ",
+  "description": "A premium, all-in-one utility suite featuring essential tools for documents, images, productivity, and device management in one app.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
