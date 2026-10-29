@@ -131,9 +131,9 @@ fun HomeScreen(
                         context, scanResult
                     )
                     if (saved != null) {
-                        repository.addHistory("doc_scanner", saved.documentTitle, saved.primaryImageFile.name)
+                        repository.addHistory("doc_scanner", saved.documentTitle, "scan_id:${saved.scanId}|${saved.primaryImageFile.name}")
                         android.widget.Toast.makeText(context, "Scan saved to history", android.widget.Toast.LENGTH_SHORT).show()
-                        onNavigateToTool(Screen.DocumentViewer.createRoute(saved.primaryImageFile.absolutePath, saved.documentTitle))
+                        onNavigateToTool(Screen.DocumentViewer.createRoute(saved.primaryImageFile.absolutePath, saved.documentTitle, saved.scanId))
                     }
                 }
             }
@@ -388,9 +388,22 @@ fun HomeScreen(
                             isReading = isReading,
                             primaryTextColor = primaryTextColor,
                             secondaryTextColor = secondaryTextColor,
-                            onNavigateToScanner = onNavigateToScanner,
+                            onNavigateToQrScan = {
+                                onNavigateToTool(Screen.Scanner.createRoute("QR_BARCODE"))
+                            },
                             onLaunchGoogleScanner = {
-                                onNavigateToTool(Screen.Scanner.createRoute("DOCUMENT_PDF"))
+                                val activity = context as? android.app.Activity
+                                if (activity != null) {
+                                    com.example.scanner.engine.GoogleDocumentScannerHelper.launch(
+                                        activity = activity,
+                                        launcher = googleScannerLauncher,
+                                        onFailure = {
+                                            onNavigateToTool(Screen.Scanner.createRoute("DOCUMENT_PDF"))
+                                        }
+                                    )
+                                } else {
+                                    onNavigateToTool(Screen.Scanner.createRoute("DOCUMENT_PDF"))
+                                }
                             }
                         )
                     }
@@ -1610,7 +1623,7 @@ private fun ScanAnythingHeroCard(
     isReading: Boolean,
     primaryTextColor: Color,
     secondaryTextColor: Color,
-    onNavigateToScanner: () -> Unit,
+    onNavigateToQrScan: () -> Unit,
     onLaunchGoogleScanner: () -> Unit = {}
 ) {
     val heroBg = when {
@@ -1661,19 +1674,19 @@ private fun ScanAnythingHeroCard(
                 )
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Action Buttons Row (Camera Scanner + Google AI Scanner)
+                // Action Buttons Row: QR Scan + Document Scanner
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Pill Button "Scanner"
+                    // Pill Button "QR Scan"
                     Surface(
                         shape = RoundedCornerShape(22.dp),
                         color = BrandBlue,
                         modifier = Modifier
                             .clip(RoundedCornerShape(22.dp))
-                            .clickable { onNavigateToScanner() }
-                            .testTag("start_scanning_btn")
+                            .clickable { onNavigateToQrScan() }
+                            .testTag("start_qr_scan_btn")
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -1681,13 +1694,13 @@ private fun ScanAnythingHeroCard(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.QrCodeScanner,
-                                contentDescription = null,
+                                contentDescription = "QR Scan",
                                 tint = Color.White,
                                 modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(5.dp))
                             Text(
-                                text = "Scanner",
+                                text = "QR Scan",
                                 style = TextStyle(
                                     fontSize = 12.5.sp,
                                     fontWeight = FontWeight.SemiBold,
@@ -1697,28 +1710,28 @@ private fun ScanAnythingHeroCard(
                         }
                     }
 
-                    // Pill Button "AI Auto-Scan"
+                    // Pill Button "Document Scanner"
                     Surface(
                         shape = RoundedCornerShape(22.dp),
                         color = Color(0xFF0D9488),
                         modifier = Modifier
                             .clip(RoundedCornerShape(22.dp))
                             .clickable { onLaunchGoogleScanner() }
-                            .testTag("start_ai_scanning_btn")
+                            .testTag("start_doc_scanner_btn")
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                imageVector = Icons.Default.AutoAwesome,
-                                contentDescription = null,
+                                imageVector = Icons.Default.DocumentScanner,
+                                contentDescription = "Document Scanner",
                                 tint = Color.White,
                                 modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(5.dp))
                             Text(
-                                text = "Doc Scanner",
+                                text = "Document Scanner",
                                 style = TextStyle(
                                     fontSize = 12.5.sp,
                                     fontWeight = FontWeight.Bold,

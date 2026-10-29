@@ -91,7 +91,8 @@ object GoogleDocumentScannerHelper {
         val documentTitle: String,
         val pageFiles: List<File>,
         val pdfFile: File?,
-        val primaryImageFile: File
+        val primaryImageFile: File,
+        val scanId: Long = -1L
     )
 
     /**
@@ -139,11 +140,31 @@ object GoogleDocumentScannerHelper {
             }
 
             val primary = savedPages.firstOrNull() ?: return@withContext null
+            var docId = -1L
+            try {
+                val bmp = android.graphics.BitmapFactory.decodeFile(primary.absolutePath)
+                if (bmp != null) {
+                    val savedRoom = ScanStorageManager.saveScan(
+                        context = context,
+                        title = title,
+                        processedBitmap = bmp,
+                        rawBitmap = bmp,
+                        filterUsed = "Google Drive Scanner",
+                        pageCount = savedPages.size,
+                        pdfFile = savedPdf
+                    )
+                    docId = savedRoom.scanId
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+
             SavedScanResult(
                 documentTitle = title,
                 pageFiles = savedPages,
                 pdfFile = savedPdf,
-                primaryImageFile = primary
+                primaryImageFile = primary,
+                scanId = docId
             )
         } catch (e: Exception) {
             e.printStackTrace()

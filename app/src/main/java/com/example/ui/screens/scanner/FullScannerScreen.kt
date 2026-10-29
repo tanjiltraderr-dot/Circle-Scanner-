@@ -359,11 +359,15 @@ fun FullScannerScreen(
         }
     }
 
-    // Trigger photo capture from CameraX
-    fun executeCapture() {
-        val capture = imageCapture ?: return
+    // Trigger photo capture from CameraX (manual shutter tap or automatic stability capture)
+    fun executeCapture(isManual: Boolean = false) {
+        val capture = imageCapture
+        if (capture == null) {
+            Toast.makeText(context, "Camera starting... Please tap shutter again in a moment", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (isProcessing) return
-        if (!scannerEngine.canTriggerAutoCapture()) return
+        if (!isManual && !scannerEngine.canTriggerAutoCapture()) return
 
         scannerEngine.notifyCaptureStarted()
         isProcessing = true
@@ -409,7 +413,7 @@ fun FullScannerScreen(
                                                     )
                                                 }
 
-                                                if (isAutoCropEnabled && autoCropResult.isSuccess) {
+                                                if (isAutoCropEnabled && autoCropResult.isSuccess && autoCropResult.croppedBitmap != null && autoCropResult.enhancedBitmap != null) {
                                                     pendingRawBitmap = capturedRaw
                                                     pendingCropQuad = autoCropResult.quad
                                                     croppedBitmap = autoCropResult.croppedBitmap
@@ -428,7 +432,6 @@ fun FullScannerScreen(
                                                     lastSavedScanFile = File(persistResult.fullImagePath)
                                                     repository.addHistory("doc_scanner", documentName, "scan_id:${persistResult.scanId}|${lastSavedScanFile!!.name}")
 
-                                                    isProcessing = false
                                                     currentStep = CamScannerStep.ENHANCE_PREVIEW
                                                 } else {
                                                     // False crop prevented or manual adjustment required:
@@ -436,7 +439,7 @@ fun FullScannerScreen(
                                                     if (isAutoCropEnabled) {
                                                         val reasonMsg = when (autoCropResult.status) {
                                                             com.example.scanner.engine.AutoCropStatus.LOW_CONFIDENCE ->
-                                                                "Boundary uncertain. Please adjust corners manually or retake."
+                                                                "Boundary uncertain. Adjust corners manually or retake."
                                                             com.example.scanner.engine.AutoCropStatus.BLURRY_CAPTURE ->
                                                                 "Image appears blurry. Adjust corners or retake."
                                                             com.example.scanner.engine.AutoCropStatus.INVALID_GEOMETRY ->
@@ -447,10 +450,15 @@ fun FullScannerScreen(
                                                     }
                                                     pendingRawBitmap = capturedRaw
                                                     pendingCropQuad = autoCropResult.quad ?: com.example.scanner.engine.AutoCropEngine.getInitialGuideQuad(capturedRaw.width, capturedRaw.height)
-                                                    isProcessing = false
                                                     currentStep = CamScannerStep.CROP_EDITOR
                                                 }
+                                            } catch (e: Throwable) {
+                                                e.printStackTrace()
+                                                pendingRawBitmap = capturedRaw
+                                                pendingCropQuad = com.example.scanner.engine.AutoCropEngine.getInitialGuideQuad(capturedRaw.width, capturedRaw.height)
+                                                currentStep = CamScannerStep.CROP_EDITOR
                                             } finally {
+                                                isProcessing = false
                                                 scannerEngine.notifyCaptureFinished()
                                             }
                                         }
@@ -470,6 +478,14 @@ fun FullScannerScreen(
                                     CameraAppMode.QR_BARCODE -> {
                                         isProcessing = false
                                         scannerEngine.notifyCaptureFinished()
+                                        val decoded = QrCodeHelper.decodeBitmap(raw!!)
+                                        if (decoded != null) {
+                                            vibrate()
+                                            repository.addHistory("qr_scanner", "QR from Photo", decoded)
+                                            onNavigateToResult(decoded, "QR_CODE")
+                                        } else {
+                                            Toast.makeText(context, "No QR or barcode detected in photo", Toast.LENGTH_SHORT).show()
+                                        }
                                     }
                                 }
                             } else {
@@ -698,9 +714,32 @@ fun FullScannerScreen(
                                                         val source = PlanarYUVLuminanceSource(
                                                             data, width, height, 0, 0, width, height, false
                                                         )
-                                                        val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
-                                                        val result = multiReader.decodeWithState(binaryBitmap)
-                                                        val text = result.text
+                                                        var binaryBitmap = BinaryBitmap(HybridBinarizer(source))
+                                                        var result: com.google.zxing.Result? = try {
+                                                            multiReader.decodeWithState(binaryBitmap)
+                                                        } catch (_: NotFoundException) {
+                                                            null
+                                                        }
+
+                                                        // If not found and rotation is 90/270, try rotated Y plane
+                                                        if (result == null && (imageProxy.imageInfo.rotationDegrees == 90 || imageProxy.imageInfo.rotationDegrees == 270)) {
+                                                            val rotatedData = ByteArray(data.size)
+                                                            for (y in 0 until height) {
+                                                                for (x in 0 until width) {
+                                                                    rotatedData[x * height + (height - y - 1)] = data[x + y * width]
+                                                                }
+                                                            }
+                                                            val rotatedSource = PlanarYUVLuminanceSource(
+                                                                rotatedData, height, width, 0, 0, height, width, false
+                                                            )
+                                                            result = try {
+                                                                multiReader.decodeWithState(BinaryBitmap(HybridBinarizer(rotatedSource)))
+                                                            } catch (_: NotFoundException) {
+                                                                null
+                                                            }
+                                                        }
+
+                                                        val text = result?.text
                                                         if (!text.isNullOrBlank()) {
                                                             hasFoundCode = true
                                                             scope.launch(Dispatchers.Main) {
@@ -713,7 +752,6 @@ fun FullScannerScreen(
                                                                 onNavigateToResult(text, result.barcodeFormat.name)
                                                             }
                                                         }
-                                                    } catch (_: NotFoundException) {
                                                     } catch (_: Exception) {
                                                     } finally {
                                                         multiReader.reset()
@@ -1023,111 +1061,200 @@ fun FullScannerScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 24.dp),
+                                    .padding(horizontal = 20.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // Left: All Features Glass Sheet Launcher
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    modifier = Modifier
-                                        .clickable { showAllFeaturesSheet = true }
-                                        .testTag("btn_all_features")
+                                // Left: All Features Glass Sheet Launcher & Gallery import
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.GridView,
-                                        contentDescription = "All features",
-                                        tint = Color.White.copy(alpha = 0.85f),
-                                        modifier = Modifier.size(26.dp)
-                                    )
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "All features",
-                                        color = Color.White.copy(alpha = 0.75f),
-                                        fontSize = 10.sp
-                                    )
-                                }
-
-                                // Center: Signature Shutter Button with Auto-Capture Stability Ring
-                                Box(
-                                    modifier = Modifier.size(86.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (autoCaptureCountdownProgress > 0f && isAutoCropEnabled) {
-                                        CircularProgressIndicator(
-                                            progress = { autoCaptureCountdownProgress },
-                                            modifier = Modifier.size(86.dp),
-                                            color = CamScannerTealBright,
-                                            strokeWidth = 3.5.dp,
-                                            trackColor = Color.White.copy(alpha = 0.2f)
+                                    // Features button
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier
+                                            .clickable { showAllFeaturesSheet = true }
+                                            .testTag("btn_all_features")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.GridView,
+                                            contentDescription = "All features",
+                                            tint = Color.White.copy(alpha = 0.85f),
+                                            modifier = Modifier.size(26.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "Features",
+                                            color = Color.White.copy(alpha = 0.75f),
+                                            fontSize = 10.sp
                                         )
                                     }
-                                    Box(
+
+                                    // Gallery button
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
                                         modifier = Modifier
-                                            .size(76.dp)
-                                            .clip(CircleShape)
-                                            .background(Color.White)
-                                            .clickable { executeCapture() }
-                                            .testTag("camscanner_shutter_btn"),
+                                            .clickable { galleryPicker.launch("image/*") }
+                                            .testTag("gallery_import_btn")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.PhotoLibrary,
+                                            contentDescription = "Import from Gallery",
+                                            tint = Color.White.copy(alpha = 0.85f),
+                                            modifier = Modifier.size(26.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "Gallery",
+                                            color = Color.White.copy(alpha = 0.75f),
+                                            fontSize = 10.sp
+                                        )
+                                    }
+                                }
+
+                                // Center: In QR/Barcode mode, NO photo capture button! Auto scan indicator only.
+                                if (activeCameraMode == CameraAppMode.QR_BARCODE) {
+                                    Surface(
+                                        shape = RoundedCornerShape(24.dp),
+                                        color = Color(0xFF18181B).copy(alpha = 0.90f),
+                                        border = BorderStroke(1.dp, CamScannerTealBright.copy(alpha = 0.5f))
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            CircularProgressIndicator(
+                                                color = CamScannerTealBright,
+                                                strokeWidth = 2.dp,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "Auto-Scanning...",
+                                                color = Color.White,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    // Center: Signature Shutter Button with Auto-Capture Stability Ring for Document / PDF / ID / Photo
+                                    Box(
+                                        modifier = Modifier.size(86.dp),
                                         contentAlignment = Alignment.Center
                                     ) {
+                                        if (autoCaptureCountdownProgress > 0f && isAutoCropEnabled) {
+                                            CircularProgressIndicator(
+                                                progress = { autoCaptureCountdownProgress },
+                                                modifier = Modifier.size(86.dp),
+                                                color = CamScannerTealBright,
+                                                strokeWidth = 3.5.dp,
+                                                trackColor = Color.White.copy(alpha = 0.2f)
+                                            )
+                                        }
                                         Box(
                                             modifier = Modifier
-                                                .size(64.dp)
+                                                .size(76.dp)
                                                 .clip(CircleShape)
-                                                .background(CamScannerTeal),
+                                                .background(Color.White)
+                                                .clickable { executeCapture(isManual = true) }
+                                                .testTag("camscanner_shutter_btn"),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            // Inner white center circle
                                             Box(
                                                 modifier = Modifier
-                                                    .size(24.dp)
+                                                    .size(64.dp)
                                                     .clip(CircleShape)
-                                                    .background(Color.White)
-                                            )
+                                                    .background(CamScannerTeal),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                // Inner white center circle
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(24.dp)
+                                                        .clip(CircleShape)
+                                                        .background(Color.White)
+                                                )
+                                            }
                                         }
                                     }
                                 }
 
-                                // Right: Gallery / Import with live badge
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    modifier = Modifier
-                                        .clickable { galleryPicker.launch("image/*") }
-                                        .testTag("gallery_import_btn")
-                                ) {
-                                    Box {
-                                        Icon(
-                                            imageVector = Icons.Default.PhotoLibrary,
-                                            contentDescription = "Gallery",
-                                            tint = Color.White.copy(alpha = 0.85f),
-                                            modifier = Modifier.size(26.dp)
-                                        )
-                                        if (documentPages.isNotEmpty()) {
+                                // Right: Scanned Page Review Button (when pages exist) or Past Scans History
+                                if (documentPages.isNotEmpty()) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier
+                                            .clickable {
+                                                // Navigate directly to PDF Session Review screen to inspect scanned pages
+                                                currentStep = CamScannerStep.PDF_SESSION_REVIEW
+                                            }
+                                            .testTag("btn_scanned_pages_review")
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(46.dp)
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(Color(0xFF262626))
+                                                .border(2.dp, CamScannerTealBright, RoundedCornerShape(10.dp)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            val lastPageBmp = documentPages.lastOrNull()?.processed
+                                            if (lastPageBmp != null) {
+                                                Image(
+                                                    bitmap = lastPageBmp.asImageBitmap(),
+                                                    contentDescription = "Scanned Page",
+                                                    contentScale = ContentScale.Crop,
+                                                    modifier = Modifier.fillMaxSize()
+                                                )
+                                            }
+                                            // Red Page Count Badge
                                             Box(
                                                 modifier = Modifier
                                                     .align(Alignment.TopEnd)
-                                                    .offset(x = 6.dp, y = (-4).dp)
-                                                    .size(16.dp)
+                                                    .offset(x = 5.dp, y = (-5).dp)
+                                                    .size(19.dp)
                                                     .clip(CircleShape)
-                                                    .background(CamScannerTealBright),
+                                                    .background(Color(0xFFEF4444)),
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 Text(
                                                     text = "${documentPages.size}",
                                                     color = Color.White,
-                                                    fontSize = 9.sp,
+                                                    fontSize = 10.sp,
                                                     fontWeight = FontWeight.Bold
                                                 )
                                             }
                                         }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "Pages (${documentPages.size})",
+                                            color = CamScannerTealBright,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
                                     }
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(
-                                        text = "Gallery",
-                                        color = Color.White.copy(alpha = 0.75f),
-                                        fontSize = 10.sp
-                                    )
+                                } else {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier
+                                            .clickable { onNavigateToPastScans() }
+                                            .testTag("btn_past_scans")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.History,
+                                            contentDescription = "Past Scans",
+                                            tint = Color.White.copy(alpha = 0.85f),
+                                            modifier = Modifier.size(26.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "History",
+                                            color = Color.White.copy(alpha = 0.75f),
+                                            fontSize = 10.sp
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1629,7 +1756,16 @@ fun FullScannerScreen(
                                             if (selectedPageIndex == idx) CamScannerTealBright else Color.White.copy(alpha = 0.2f),
                                             RoundedCornerShape(12.dp)
                                         )
-                                        .clickable { selectedPageIndex = idx }
+                                        .clickable {
+                                            selectedPageIndex = idx
+                                            val p = documentPages[idx]
+                                            croppedBitmap = p.croppedOriginal
+                                            enhancedBitmap = p.processed
+                                            activeFilter = p.activeFilter
+                                            pendingRawBitmap = p.rawOriginal
+                                            pendingCropQuad = p.quad
+                                            currentStep = CamScannerStep.ENHANCE_PREVIEW
+                                        }
                                 ) {
                                     Image(
                                         bitmap = page.processed.asImageBitmap(),

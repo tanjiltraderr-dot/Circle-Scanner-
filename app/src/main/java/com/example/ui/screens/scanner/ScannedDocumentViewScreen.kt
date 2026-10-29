@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.PointF
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -12,6 +13,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -97,6 +100,8 @@ fun ScannedDocumentViewScreen(
     var showOcrModal by remember { mutableStateOf(false) }
     var ocrTextResult by remember { mutableStateOf("") }
     var showCropAdjuster by remember { mutableStateOf(false) }
+    var cropCandidateBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var cropQuad by remember { mutableStateOf<com.example.utils.DocumentQuad?>(null) }
 
     BackHandler {
         if (showCropAdjuster) {
@@ -502,6 +507,18 @@ fun ScannedDocumentViewScreen(
                                 }
                             )
 
+                            // Crop & Straighten
+                            ToolbarIconAction(
+                                icon = Icons.Default.Crop,
+                                label = "Crop",
+                                onClick = {
+                                    val bmp = displayBitmap ?: return@ToolbarIconAction
+                                    cropCandidateBitmap = bmp
+                                    cropQuad = DocumentProcessor.detectDocumentCorners(bmp)
+                                    showCropAdjuster = true
+                                }
+                            )
+
                             // Extract Text (OCR)
                             ToolbarIconAction(
                                 icon = Icons.Default.TextFields,
@@ -560,6 +577,130 @@ fun ScannedDocumentViewScreen(
                             fontSize = 13.5.sp,
                             fontWeight = FontWeight.Medium
                         )
+                    }
+                }
+            }
+        }
+    }
+
+    // Interactive Crop Modal Dialog
+    if (showCropAdjuster && cropCandidateBitmap != null) {
+        val targetBmp = cropCandidateBitmap!!
+        val currentQuad = cropQuad ?: remember(targetBmp) { DocumentProcessor.detectDocumentCorners(targetBmp) }
+        Dialog(
+            onDismissRequest = { showCropAdjuster = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = Color.Black
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                        .navigationBarsPadding()
+                ) {
+                    // Top Bar
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        IconButton(onClick = { showCropAdjuster = false }) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancel", tint = Color.White)
+                        }
+                        Text(
+                            text = "Crop & Straighten",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 17.sp
+                        )
+                        TextButton(
+                            onClick = {
+                                val bmp = cropCandidateBitmap ?: return@TextButton
+                                val q = cropQuad ?: DocumentProcessor.detectDocumentCorners(bmp)
+                                scope.launch {
+                                    isProcessing = true
+                                    processingMsg = "Cropping document..."
+                                    val cropped = withContext(Dispatchers.IO) {
+                                        DocumentProcessor.cropPerspective(bmp, q)
+                                    }
+                                    val filtered = withContext(Dispatchers.IO) {
+                                        DocumentProcessor.applyFilter(cropped, activeFilter)
+                                    }
+                                    baseBitmap = cropped
+                                    displayBitmap = filtered
+                                    currentFile?.let { f ->
+                                        withContext(Dispatchers.IO) {
+                                            try {
+                                                java.io.FileOutputStream(f).use { out ->
+                                                    filtered.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                                                }
+                                            } catch (_: Exception) {}
+                                        }
+                                    }
+                                    showCropAdjuster = false
+                                    isProcessing = false
+                                    Toast.makeText(context, "Document cropped & saved", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        ) {
+                            Text("Done", color = Color(0xFF00E676), fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        }
+                    }
+
+                    // Interactive Corner-Dragging Quad Editor
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(8.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        InteractiveQuadEditor(
+                            bitmap = targetBmp,
+                            quad = currentQuad,
+                            onQuadChanged = { cropQuad = it }
+                        )
+                    }
+
+                    // Bottom Quick Options: Auto Detect & Full Page
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                cropQuad = DocumentProcessor.detectDocumentCorners(targetBmp)
+                            }
+                        ) {
+                            Icon(Icons.Default.AutoFixHigh, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Auto Detect", color = Color.White, fontSize = 13.sp)
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val w = targetBmp.width.toFloat()
+                                val h = targetBmp.height.toFloat()
+                                cropQuad = com.example.utils.DocumentQuad(
+                                    topLeft = PointF(0f, 0f),
+                                    topRight = PointF(w, 0f),
+                                    bottomRight = PointF(w, h),
+                                    bottomLeft = PointF(0f, h),
+                                    isAutoDetected = false
+                                )
+                            }
+                        ) {
+                            Icon(Icons.Default.CropFree, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color.White)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Full Page", color = Color.White, fontSize = 13.sp)
+                        }
                     }
                 }
             }
