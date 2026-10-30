@@ -192,7 +192,8 @@ fun HomeScreen(
         } else {
             val resolved = com.example.utils.ScanThumbnailHelper.resolveFile(context, item)
             val path = resolved?.absolutePath ?: item.details
-            onNavigateToTool(Screen.DocumentViewer.createRoute(path, item.title))
+            val docId = com.example.scanner.engine.ScanStorageManager.extractScanId(item.details) ?: -1L
+            onNavigateToTool(Screen.DocumentViewer.createRoute(path, item.title, docId))
         }
     }
 
@@ -517,7 +518,7 @@ fun HomeScreen(
                                     isDark = isDark,
                                     isReading = isReading,
                                     primaryTextColor = primaryTextColor,
-                                    onClick = { onNavigateToTool(Screen.DocScan.route) },
+                                    onClick = { onNavigateToTool(Screen.PastScans.route) },
                                     testTag = "quick_category_past_scans",
                                     modifier = Modifier.weight(1f)
                                 )

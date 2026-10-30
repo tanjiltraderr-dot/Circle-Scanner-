@@ -52,8 +52,28 @@ object QrCodeHelper {
             bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
             val source = RGBLuminanceSource(width, height, pixels)
             val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
-            val reader = MultiFormatReader()
-            val result = reader.decode(binaryBitmap)
+            val hints = mapOf<com.google.zxing.DecodeHintType, Any>(
+                com.google.zxing.DecodeHintType.TRY_HARDER to true,
+                com.google.zxing.DecodeHintType.POSSIBLE_FORMATS to listOf(
+                    BarcodeFormat.QR_CODE,
+                    BarcodeFormat.DATA_MATRIX,
+                    BarcodeFormat.AZTEC,
+                    BarcodeFormat.PDF_417,
+                    BarcodeFormat.CODE_128,
+                    BarcodeFormat.CODE_39,
+                    BarcodeFormat.EAN_13,
+                    BarcodeFormat.EAN_8,
+                    BarcodeFormat.UPC_A,
+                    BarcodeFormat.UPC_E,
+                    BarcodeFormat.ITF
+                )
+            )
+            val reader = MultiFormatReader().apply { setHints(hints) }
+            val result = try {
+                reader.decodeWithState(binaryBitmap)
+            } catch (_: Exception) {
+                reader.decodeWithState(BinaryBitmap(com.google.zxing.common.GlobalHistogramBinarizer(source)))
+            }
             result.text
         } catch (e: Exception) {
             null

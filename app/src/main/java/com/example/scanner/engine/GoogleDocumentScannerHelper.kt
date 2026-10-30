@@ -69,15 +69,29 @@ object GoogleDocumentScannerHelper {
         launcher: ActivityResultLauncher<IntentSenderRequest>,
         onFailure: (Exception) -> Unit = {}
     ) {
-        val scanner = createScannerClient()
-        scanner.getStartScanIntent(activity)
-            .addOnSuccessListener { intentSender: IntentSender ->
-                val request = IntentSenderRequest.Builder(intentSender).build()
-                launcher.launch(request)
+        try {
+            if (!isGooglePlayServicesAvailable(activity)) {
+                activity.runOnUiThread {
+                    onFailure(IllegalStateException("Google Play Services not available"))
+                }
+                return
             }
-            .addOnFailureListener { exception ->
-                onFailure(exception)
-            }
+            val scanner = createScannerClient()
+            scanner.getStartScanIntent(activity)
+                .addOnSuccessListener(activity) { intentSender: IntentSender ->
+                    try {
+                        val request = IntentSenderRequest.Builder(intentSender).build()
+                        launcher.launch(request)
+                    } catch (e: Exception) {
+                        activity.runOnUiThread { onFailure(e) }
+                    }
+                }
+                .addOnFailureListener(activity) { exception ->
+                    activity.runOnUiThread { onFailure(exception) }
+                }
+        } catch (e: Exception) {
+            activity.runOnUiThread { onFailure(e) }
+        }
     }
 
     /**

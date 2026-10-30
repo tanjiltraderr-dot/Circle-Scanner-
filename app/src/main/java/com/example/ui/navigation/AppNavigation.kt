@@ -182,6 +182,9 @@ fun AppNavigation() {
                     },
                     onNavigateToCategory = { catId ->
                         navController.navigate(Screen.CategoryDetails.createRoute(catId))
+                    },
+                    onNavigateToTool = { route ->
+                        navController.navigate(route)
                     }
                 )
             }
@@ -310,6 +313,21 @@ fun AppNavigation() {
                     onBack = { navController.popBackStack() },
                     onNavigateToResult = { content, format ->
                         navController.navigate(Screen.ScanResult.createRoute(content, format))
+                    },
+                    onNavigateToDocumentViewer = { filePath, title ->
+                        navController.navigate(Screen.DocumentViewer.createRoute(filePath, title))
+                    },
+                    onNavigateToDocumentViewerWithId = { filePath, title, docId ->
+                        navController.navigate(Screen.DocumentViewer.createRoute(filePath, title, docId))
+                    },
+                    onNavigateToPastScans = {
+                        navController.navigate(Screen.PastScans.route)
+                    },
+                    onNavigateToCategory = { catId ->
+                        navController.navigate(Screen.CategoryDetails.createRoute(catId))
+                    },
+                    onNavigateToTool = { route ->
+                        navController.navigate(route)
                     }
                 )
             }
@@ -320,6 +338,21 @@ fun AppNavigation() {
                     onBack = { navController.popBackStack() },
                     onNavigateToResult = { content, format ->
                         navController.navigate(Screen.ScanResult.createRoute(content, format))
+                    },
+                    onNavigateToDocumentViewer = { filePath, title ->
+                        navController.navigate(Screen.DocumentViewer.createRoute(filePath, title))
+                    },
+                    onNavigateToDocumentViewerWithId = { filePath, title, docId ->
+                        navController.navigate(Screen.DocumentViewer.createRoute(filePath, title, docId))
+                    },
+                    onNavigateToPastScans = {
+                        navController.navigate(Screen.PastScans.route)
+                    },
+                    onNavigateToCategory = { catId ->
+                        navController.navigate(Screen.CategoryDetails.createRoute(catId))
+                    },
+                    onNavigateToTool = { route ->
+                        navController.navigate(route)
                     }
                 )
             }
@@ -330,6 +363,21 @@ fun AppNavigation() {
                     onBack = { navController.popBackStack() },
                     onNavigateToResult = { content, format ->
                         navController.navigate(Screen.ScanResult.createRoute(content, format))
+                    },
+                    onNavigateToDocumentViewer = { filePath, title ->
+                        navController.navigate(Screen.DocumentViewer.createRoute(filePath, title))
+                    },
+                    onNavigateToDocumentViewerWithId = { filePath, title, docId ->
+                        navController.navigate(Screen.DocumentViewer.createRoute(filePath, title, docId))
+                    },
+                    onNavigateToPastScans = {
+                        navController.navigate(Screen.PastScans.route)
+                    },
+                    onNavigateToCategory = { catId ->
+                        navController.navigate(Screen.CategoryDetails.createRoute(catId))
+                    },
+                    onNavigateToTool = { route ->
+                        navController.navigate(route)
                     }
                 )
             }

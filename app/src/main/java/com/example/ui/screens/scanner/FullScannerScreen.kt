@@ -179,6 +179,13 @@ fun FullScannerScreen(
     var isFrameTooDark by remember { mutableStateOf(false) }
     var isFrameTooBright by remember { mutableStateOf(false) }
     var isFrameBlurry by remember { mutableStateOf(false) }
+    val hasFoundCode = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+
+    LaunchedEffect(activeCameraMode, currentStep) {
+        if (activeCameraMode == CameraAppMode.QR_BARCODE && currentStep == CamScannerStep.CAMERA) {
+            hasFoundCode.set(false)
+        }
+    }
 
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -700,48 +707,76 @@ fun FullScannerScreen(
                                             setHints(mapOf(DecodeHintType.POSSIBLE_FORMATS to formats))
                                         }
 
-                                        var hasFoundCode = false
                                         analysis.setAnalyzer(cameraExecutor) { imageProxy ->
                                             try {
-                                                if (activeCameraMode == CameraAppMode.QR_BARCODE && !hasFoundCode) {
-                                                    val buffer = imageProxy.planes[0].buffer
-                                                    val data = ByteArray(buffer.remaining())
-                                                    buffer.get(data)
+                                                if (activeCameraMode == CameraAppMode.QR_BARCODE && !hasFoundCode.get()) {
+                                                    val plane = imageProxy.planes[0]
+                                                    val buffer = plane.buffer
+                                                    val rowStride = plane.rowStride
                                                     val width = imageProxy.width
                                                     val height = imageProxy.height
+                                                    val rotation = imageProxy.imageInfo.rotationDegrees
+
+                                                    // Extract clean compact bytes without row padding
+                                                    val compactY = ByteArray(width * height)
+                                                    val tempRow = ByteArray(rowStride)
+                                                    buffer.rewind()
+                                                    for (y in 0 until height) {
+                                                        val rem = buffer.remaining()
+                                                        if (rem >= rowStride) {
+                                                            buffer.get(tempRow, 0, rowStride)
+                                                            System.arraycopy(tempRow, 0, compactY, y * width, width)
+                                                        } else if (rem > 0) {
+                                                            buffer.get(tempRow, 0, rem)
+                                                            System.arraycopy(tempRow, 0, compactY, y * width, minOf(width, rem))
+                                                        }
+                                                    }
 
                                                     try {
-                                                        val source = PlanarYUVLuminanceSource(
-                                                            data, width, height, 0, 0, width, height, false
+                                                        var source: LuminanceSource = PlanarYUVLuminanceSource(
+                                                            compactY, width, height, 0, 0, width, height, false
                                                         )
-                                                        var binaryBitmap = BinaryBitmap(HybridBinarizer(source))
+                                                        if (rotation == 90) {
+                                                            val rot90 = ByteArray(width * height)
+                                                            for (y in 0 until height) {
+                                                                for (x in 0 until width) {
+                                                                    rot90[x * height + (height - y - 1)] = compactY[x + y * width]
+                                                                }
+                                                            }
+                                                            source = PlanarYUVLuminanceSource(rot90, height, width, 0, 0, height, width, false)
+                                                        } else if (rotation == 270) {
+                                                            val rot270 = ByteArray(width * height)
+                                                            for (y in 0 until height) {
+                                                                for (x in 0 until width) {
+                                                                    rot270[(width - x - 1) * height + y] = compactY[x + y * width]
+                                                                }
+                                                            }
+                                                            source = PlanarYUVLuminanceSource(rot270, height, width, 0, 0, height, width, false)
+                                                        } else if (rotation == 180) {
+                                                            val rot180 = ByteArray(width * height)
+                                                            for (i in compactY.indices) {
+                                                                rot180[compactY.size - 1 - i] = compactY[i]
+                                                            }
+                                                            source = PlanarYUVLuminanceSource(rot180, width, height, 0, 0, width, height, false)
+                                                        }
+
+                                                        val binaryBitmap = BinaryBitmap(HybridBinarizer(source))
                                                         var result: com.google.zxing.Result? = try {
                                                             multiReader.decodeWithState(binaryBitmap)
                                                         } catch (_: NotFoundException) {
                                                             null
                                                         }
 
-                                                        // If not found and rotation is 90/270, try rotated Y plane
-                                                        if (result == null && (imageProxy.imageInfo.rotationDegrees == 90 || imageProxy.imageInfo.rotationDegrees == 270)) {
-                                                            val rotatedData = ByteArray(data.size)
-                                                            for (y in 0 until height) {
-                                                                for (x in 0 until width) {
-                                                                    rotatedData[x * height + (height - y - 1)] = data[x + y * width]
-                                                                }
-                                                            }
-                                                            val rotatedSource = PlanarYUVLuminanceSource(
-                                                                rotatedData, height, width, 0, 0, height, width, false
-                                                            )
+                                                        if (result == null) {
                                                             result = try {
-                                                                multiReader.decodeWithState(BinaryBitmap(HybridBinarizer(rotatedSource)))
+                                                                multiReader.decodeWithState(BinaryBitmap(com.google.zxing.common.GlobalHistogramBinarizer(source)))
                                                             } catch (_: NotFoundException) {
                                                                 null
                                                             }
                                                         }
 
                                                         val text = result?.text
-                                                        if (!text.isNullOrBlank()) {
-                                                            hasFoundCode = true
+                                                        if (!text.isNullOrBlank() && hasFoundCode.compareAndSet(false, true)) {
                                                             scope.launch(Dispatchers.Main) {
                                                                 vibrate()
                                                                 repository.addHistory(
@@ -783,7 +818,17 @@ fun FullScannerScreen(
 
                                         try {
                                             cameraProvider.unbindAll()
-                                            val cameraSelector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
+                                            val cameraSelector = if (cameraProvider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) {
+                                                if (lensFacing == CameraSelector.LENS_FACING_FRONT && cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
+                                                    CameraSelector.DEFAULT_FRONT_CAMERA
+                                                } else {
+                                                    CameraSelector.DEFAULT_BACK_CAMERA
+                                                }
+                                            } else if (cameraProvider.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA)) {
+                                                CameraSelector.DEFAULT_FRONT_CAMERA
+                                            } else {
+                                                CameraSelector.DEFAULT_BACK_CAMERA
+                                            }
                                             val camera = cameraProvider.bindToLifecycle(
                                                 lifecycleOwner,
                                                 cameraSelector,
